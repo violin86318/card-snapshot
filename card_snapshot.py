@@ -399,86 +399,139 @@ def main() -> None:
         if use_isolation:
             print()
             print("🔄 使用隔离模式重新截图（逐张加载，减少内存压力）...")
-            browser.close()
+            try:
+                browser.close()
+            except Exception:
+                pass
 
-            # 重新启动浏览器
-            if args.browser == "firefox":
-                browser = p.firefox.launch(headless=headless)
-            elif args.browser == "webkit":
-                browser = p.webkit.launch(headless=headless)
-            else:
-                browser = p.chromium.launch(headless=headless, args=chromium_args)
+            def launch_browser():
+                if args.browser == "firefox":
+                    return p.firefox.launch(headless=headless)
+                elif args.browser == "webkit":
+                    return p.webkit.launch(headless=headless)
+                else:
+                    return p.chromium.launch(headless=headless, args=chromium_args)
 
+            # 用于移除导致崩溃的重型 CSS 效果的样式
+            STRIP_HEAVY_CSS = """
+                *::after, *::before {
+                    background-image: none !important;
+                    filter: none !important;
+                }
+                svg filter, svg feTurbulence, svg feColorMatrix {
+                    display: none !important;
+                }
+                .noise-filter { display: none !important; }
+            """
+
+            browser = launch_browser()
             success_count = 0
             total = len(elements)
+            failed_indices = []
 
             for index in range(1, total + 1):
-                try:
-                    # 每张卡片用全新的页面，彻底释放内存
-                    context = browser.new_context(
-                        viewport={"width": args.width, "height": args.height}
-                    )
-                    iso_page = context.new_page()
-                    iso_page.set_default_timeout(60000)
+                ok = False
+                for attempt in range(2):  # 最多重试 2 次
+                    try:
+                        context = browser.new_context(
+                            viewport={"width": args.width, "height": args.height}
+                        )
+                        iso_page = context.new_page()
+                        iso_page.set_default_timeout(60000)
 
-                    # 重新加载页面
-                    if target_url:
-                        iso_page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+                        # 重新加载页面
+                        if target_url:
+                            iso_page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+                            try:
+                                iso_page.wait_for_load_state("networkidle", timeout=15000)
+                            except Exception:
+                                pass
+                        else:
+                            iso_page.goto(path_to_file_url(html_path), wait_until="networkidle")
+
+                        # 等待字体加载
+                        iso_page.evaluate("() => document.fonts ? document.fonts.ready : Promise.resolve()")
+                        iso_page.wait_for_timeout(500)
+
+                        # 隐藏所有其他卡片 + 移除重型 CSS 效果
+                        iso_page.evaluate(f"""
+                            () => {{
+                                // 隐藏其他卡片
+                                const cards = document.querySelectorAll('{selector}');
+                                cards.forEach((card, i) => {{
+                                    if (i !== {index - 1}) {{
+                                        card.style.display = 'none';
+                                    }}
+                                }});
+                                // 注入移除重型 CSS 效果的样式
+                                const style = document.createElement('style');
+                                style.textContent = `{STRIP_HEAVY_CSS}`;
+                                document.head.appendChild(style);
+                                // 移除 SVG noise filter 元素
+                                document.querySelectorAll('svg.noise-filter, svg filter').forEach(el => el.remove());
+                            }}
+                        """)
+                        iso_page.wait_for_timeout(300)
+
+                        # 获取目标元素并截图
+                        target_el = iso_page.query_selector(f"{selector}:nth-child({index})")
+                        if not target_el:
+                            visible_els = iso_page.query_selector_all(selector)
+                            visible_els = [el for el in visible_els if el.is_visible()]
+                            if visible_els:
+                                target_el = visible_els[0]
+
+                        if target_el:
+                            target_el.scroll_into_view_if_needed()
+                            iso_page.wait_for_timeout(300)
+                            filename = f"{args.prefix}-{index:02d}.png"
+                            out_path = out_dir / filename
+                            target_el.screenshot(path=str(out_path))
+                            print(f"   [{index}/{total}] {filename}")
+                            success_count += 1
+                            ok = True
+                        else:
+                            print(f"   [{index}/{total}] ❌ 未找到元素")
+                            ok = True  # 不再重试
+
+                        context.close()
+                        break  # 成功，跳出重试循环
+
+                    except Exception as e:
+                        error_msg = str(e)
                         try:
-                            iso_page.wait_for_load_state("networkidle", timeout=15000)
+                            context.close()
                         except Exception:
                             pass
-                    else:
-                        iso_page.goto(path_to_file_url(html_path), wait_until="networkidle")
 
-                    # 等待字体加载
-                    iso_page.evaluate("() => document.fonts ? document.fonts.ready : Promise.resolve()")
-                    iso_page.wait_for_timeout(500)
+                        if "crashed" in error_msg.lower():
+                            # 浏览器崩溃了，需要完全重启
+                            try:
+                                browser.close()
+                            except Exception:
+                                pass
+                            browser = launch_browser()
+                            if attempt == 0:
+                                print(f"   [{index}/{total}] ⚠️  崩溃，重启浏览器重试...")
+                            else:
+                                print(f"   [{index}/{total}] ❌ 重试后仍然崩溃")
+                                failed_indices.append(index)
+                        else:
+                            print(f"   [{index}/{total}] ❌ 失败: {e}")
+                            ok = True  # 非崩溃错误不重试
+                            break
 
-                    # 隐藏所有其他卡片，只保留当前要截图的那张
-                    iso_page.evaluate(f"""
-                        () => {{
-                            const cards = document.querySelectorAll('{selector}');
-                            cards.forEach((card, i) => {{
-                                if (i !== {index - 1}) {{
-                                    card.style.display = 'none';
-                                }}
-                            }});
-                        }}
-                    """)
-                    iso_page.wait_for_timeout(300)
+                if not ok and index not in failed_indices:
+                    failed_indices.append(index)
 
-                    # 获取目标元素并截图
-                    target_el = iso_page.query_selector(f"{selector}:nth-child({index})")
-                    if not target_el:
-                        # nth-child 可能不匹配，用备用方案
-                        visible_els = iso_page.query_selector_all(selector)
-                        visible_els = [el for el in visible_els if el.is_visible()]
-                        if visible_els:
-                            target_el = visible_els[0]
+            if failed_indices:
+                print(f"\n⚠️  以下卡片因渲染过于复杂而无法截图: {failed_indices}")
+                print("   提示: 可尝试 --browser webkit 或简化页面中的 SVG 滤镜")
 
-                    if target_el:
-                        target_el.scroll_into_view_if_needed()
-                        iso_page.wait_for_timeout(300)
-                        filename = f"{args.prefix}-{index:02d}.png"
-                        out_path = out_dir / filename
-                        target_el.screenshot(path=str(out_path))
-                        print(f"   [{index}/{total}] {filename}")
-                        success_count += 1
-                    else:
-                        print(f"   [{index}/{total}] ❌ 未找到元素")
-
-                    # 关闭此页面的 context，释放内存
-                    context.close()
-
-                except Exception as e:
-                    print(f"   [{index}/{total}] ❌ 失败: {e}")
-                    try:
-                        context.close()
-                    except Exception:
-                        pass
-
-        browser.close()
+        try:
+            browser.close()
+        except Exception:
+            pass
 
     print()
     print(f"✅ 完成! 成功导出 {success_count}/{len(elements)} 张图片")

@@ -429,6 +429,9 @@ def main() -> None:
             total = len(elements)
             failed_indices = []
 
+            import tempfile
+            import os
+
             for index in range(1, total + 1):
                 ok = False
                 for attempt in range(2):  # 最多重试 2 次
@@ -439,21 +442,56 @@ def main() -> None:
                         iso_page = context.new_page()
                         iso_page.set_default_timeout(60000)
 
+                        temp_html_path = None
+                        
+                        # 针对本地文件提前预处理 HTML，避免渲染引擎在加载时即崩溃
+                        if not target_url:
+                            try:
+                                with open(html_path, 'r', encoding='utf-8') as f:
+                                    content = f.read()
+                                # 彻底移除导致崩溃的 SVG 噪点层
+                                content = re.sub(r'<svg[^>]*class="[^"]*noise-filter[^"]*"[^>]*>.*?</svg>', '', content, flags=re.DOTALL)
+                                content = content.replace('</head>', f'<style>{STRIP_HEAVY_CSS}</style></head>')
+                                
+                                fd, temp_html_path = tempfile.mkstemp(suffix=".html", dir=html_path.parent)
+                                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                                    f.write(content)
+                            except Exception as e:
+                                print(f"   ⚠️ 预处理 HTML 失败: {e}")
+                                temp_html_path = None
+
+                        def handle_route(route):
+                            if route.request.resource_type == "document":
+                                try:
+                                    response = route.fetch()
+                                    body = response.text()
+                                    body = re.sub(r'<svg[^>]*class="[^"]*noise-filter[^"]*"[^>]*>.*?</svg>', '', body, flags=re.DOTALL)
+                                    body = body.replace('</head>', f'<style>{STRIP_HEAVY_CSS}</style></head>')
+                                    route.fulfill(response=response, body=body)
+                                except Exception:
+                                    route.continue_()
+                            else:
+                                route.continue_()
+
                         # 重新加载页面
                         if target_url:
+                            iso_page.route("**/*", handle_route)
                             iso_page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
                             try:
                                 iso_page.wait_for_load_state("networkidle", timeout=15000)
                             except Exception:
                                 pass
                         else:
-                            iso_page.goto(path_to_file_url(html_path), wait_until="networkidle")
+                            if temp_html_path:
+                                iso_page.goto(path_to_file_url(Path(temp_html_path)), wait_until="networkidle")
+                            else:
+                                iso_page.goto(path_to_file_url(html_path), wait_until="networkidle")
 
                         # 等待字体加载
                         iso_page.evaluate("() => document.fonts ? document.fonts.ready : Promise.resolve()")
                         iso_page.wait_for_timeout(500)
 
-                        # 隐藏所有其他卡片 + 移除重型 CSS 效果
+                        # 隐藏所有其他卡片
                         iso_page.evaluate(f"""
                             () => {{
                                 // 隐藏其他卡片
@@ -463,11 +501,11 @@ def main() -> None:
                                         card.style.display = 'none';
                                     }}
                                 }});
-                                // 注入移除重型 CSS 效果的样式
+                                // 二次确保注入样式
                                 const style = document.createElement('style');
                                 style.textContent = `{STRIP_HEAVY_CSS}`;
                                 document.head.appendChild(style);
-                                // 移除 SVG noise filter 元素
+                                // 移除残余 SVG
                                 document.querySelectorAll('svg.noise-filter, svg filter').forEach(el => el.remove());
                             }}
                         """)
@@ -495,6 +533,14 @@ def main() -> None:
                             ok = True  # 不再重试
 
                         context.close()
+                        
+                        # 清理临时文件
+                        if temp_html_path and os.path.exists(temp_html_path):
+                            try:
+                                os.remove(temp_html_path)
+                            except Exception:
+                                pass
+                        
                         break  # 成功，跳出重试循环
 
                     except Exception as e:
@@ -503,6 +549,13 @@ def main() -> None:
                             context.close()
                         except Exception:
                             pass
+                            
+                        # 清理临时文件
+                        if 'temp_html_path' in locals() and temp_html_path and os.path.exists(temp_html_path):
+                            try:
+                                os.remove(temp_html_path)
+                            except Exception:
+                                pass
 
                         if "crashed" in error_msg.lower():
                             # 浏览器崩溃了，需要完全重启

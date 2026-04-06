@@ -183,3 +183,10 @@ MIT License
 ## 🤝 贡献
 
 欢迎提交 Issue 和 Pull Request！
+
+### Mac 终极防崩溃方案
+对于 macOS 用户，当你遇到即便使用了隔离模式依然因为页面过于复杂（如大量深层 SVG 滤镜、复杂的 CSS 混合模式等）而导致 Chromium (Google 引擎) OOM 崩溃的情况，强烈建议使用 **WebKit (Safari 引擎)**：
+```bash
+card-snapshot "page.html" --browser webkit
+```
+> WebKit 引擎在 macOS 上能高度穿透系统底层的 CoreGraphics 与 Metal API 甚至虚拟内存调度，对于极高强度的混合滤镜渲染宽容度远超 Chromium，是精美卡片的免死金牌。

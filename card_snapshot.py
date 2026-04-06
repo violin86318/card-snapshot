@@ -33,6 +33,7 @@ except ImportError:
 # 常见的卡片选择器，按优先级排序
 # 精确选择器在前，模糊选择器在后
 COMMON_SELECTORS = [
+    ".page",           # BibiGPT 等知识卡片页面
     ".poster-card",
     ".card",
     ".post-card",
@@ -88,7 +89,7 @@ def generate_output_dir(target: str) -> str:
 def detect_selectors(target_ctx, page) -> list:
     """检测页面中可能的卡片选择器
     
-    返回: [(selector, total_count, valid_count, is_fuzzy), ...]
+    返回: [(selector, total_count, valid_count, avg_height, is_fuzzy), ...]
     优先返回精确选择器，模糊选择器作为后备
     """
     results = []
@@ -99,15 +100,18 @@ def detect_selectors(target_ctx, page) -> list:
             if elements and len(elements) >= 2:  # 至少有2个元素才算有效
                 # 检查元素是否有合理的尺寸
                 valid_count = 0
+                total_height = 0
                 for el in elements[:5]:  # 只检查前5个
                     try:
                         box = el.bounding_box()
                         if box and box["width"] > 50 and box["height"] > 50:
                             valid_count += 1
+                            total_height += box["height"]
                     except Exception:
                         pass
                 if valid_count >= 2:
-                    results.append((selector, len(elements), valid_count, is_fuzzy))
+                    avg_height = total_height / valid_count if valid_count > 0 else 0
+                    results.append((selector, len(elements), valid_count, avg_height, is_fuzzy))
         except Exception:
             pass
 
@@ -121,9 +125,9 @@ def detect_selectors(target_ctx, page) -> list:
 
     # 排序优先级：
     # 1. 精确选择器优先（is_fuzzy=False 排前面）
-    # 2. 有效元素数量多的优先
+    # 2. 平均高度大的优先（真正的卡片通常更高）
     # 3. 总元素数量少的优先（更精确的匹配）
-    results.sort(key=lambda x: (x[3], -x[2], x[1]))
+    results.sort(key=lambda x: (x[4], -x[3], x[1]))
     return results
 
 
@@ -207,6 +211,12 @@ def main() -> None:
         action="store_true",
         help="只列出检测到的选择器，不导出",
     )
+    parser.add_argument(
+        "--browser",
+        choices=["chromium", "firefox", "webkit"],
+        default="chromium",
+        help="使用的浏览器引擎 (默认: chromium)",
+    )
     args = parser.parse_args()
 
     # 判断是 URL 还是本地文件
@@ -230,7 +240,24 @@ def main() -> None:
     print()
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
+        # Chromium 启动参数：防止大页面导致渲染进程崩溃
+        chromium_args = [
+            "--disable-gpu",                    # 禁用 GPU 加速（SVG filter 在 CPU 更稳定）
+            "--disable-dev-shm-usage",           # 避免 /dev/shm 空间不足
+            "--disable-software-rasterizer",     # 禁用软件光栅化
+            "--no-sandbox",                      # 减少内存隔离开销
+            "--disable-extensions",              # 不加载扩展
+            "--disable-background-timer-throttling",
+            "--js-flags=--max-old-space-size=4096",  # 增大 V8 堆内存
+        ]
+
+        # 选择浏览器引擎
+        if args.browser == "firefox":
+            browser = p.firefox.launch(headless=headless)
+        elif args.browser == "webkit":
+            browser = p.webkit.launch(headless=headless)
+        else:
+            browser = p.chromium.launch(headless=headless, args=chromium_args)
         context = browser.new_context(
             viewport={"width": args.width, "height": args.height}
         )
@@ -283,14 +310,15 @@ def main() -> None:
             detected = detect_selectors(target_ctx, page)
             if detected:
                 selector = detected[0][0]
-                is_fuzzy = detected[0][3]
+                is_fuzzy = detected[0][4]
+                avg_h = detected[0][3]
                 fuzzy_hint = " (模糊匹配)" if is_fuzzy else ""
-                print(f"   找到选择器: {selector} ({detected[0][1]} 个元素){fuzzy_hint}")
+                print(f"   找到选择器: {selector} ({detected[0][1]} 个元素, 高度 {avg_h:.0f}px){fuzzy_hint}")
                 if len(detected) > 1:
                     print("   其他候选:")
-                    for sel, count, valid, fuzzy in detected[1:3]:
+                    for sel, count, valid, avg_height, fuzzy in detected[1:3]:
                         hint = " (模糊)" if fuzzy else ""
-                        print(f"     - {sel} ({count} 个元素){hint}")
+                        print(f"     - {sel} ({count} 个元素, 高度 {avg_height:.0f}px){hint}")
             else:
                 print("❌ 未检测到卡片元素")
                 print("请手动指定选择器: -s '.your-selector'")
@@ -300,9 +328,9 @@ def main() -> None:
         if args.list_selectors:
             print("\n检测到的选择器:")
             detected = detect_selectors(target_ctx, page)
-            for sel, count, valid, fuzzy in detected:
+            for sel, count, valid, avg_height, fuzzy in detected:
                 hint = " [模糊]" if fuzzy else ""
-                print(f"  {sel}: {count} 个元素 ({valid} 个有效){hint}")
+                print(f"  {sel}: {count} 个元素, 高度 {avg_height:.0f}px ({valid} 个有效){hint}")
             browser.close()
             return
 
@@ -332,13 +360,21 @@ def main() -> None:
         # 等待懒加载内容渲染
         page.wait_for_timeout(1500)
 
-        # 回到顶部
-        page.evaluate("window.scrollTo(0, 0)")
+        # 回到顶部（在正确的上下文中执行）
+        try:
+            if target_ctx != page and hasattr(target_ctx, 'evaluate'):
+                target_ctx.evaluate("window.scrollTo(0, 0)")
+            else:
+                page.evaluate("window.scrollTo(0, 0)")
+        except Exception:
+            pass  # 忽略滚动失败
         page.wait_for_timeout(300)
 
-        # 第二轮: 截图
+        # 第二轮: 截图（带崩溃恢复）
         print("📸 开始截图...")
         success_count = 0
+        use_isolation = False  # 是否使用隔离模式（隐藏其他卡片减少内存）
+
         for index, element in enumerate(elements, start=1):
             try:
                 element.scroll_into_view_if_needed()
@@ -350,7 +386,97 @@ def main() -> None:
                 print(f"   [{index}/{len(elements)}] {filename}")
                 success_count += 1
             except Exception as e:
-                print(f"   [{index}/{len(elements)}] ❌ 失败: {e}")
+                error_msg = str(e)
+                if "Target crashed" in error_msg or "crashed" in error_msg.lower():
+                    if not use_isolation:
+                        print(f"   [{index}/{len(elements)}] ⚠️  渲染进程崩溃，切换到隔离模式...")
+                        use_isolation = True
+                    break  # 崩溃后需要重新加载页面
+                else:
+                    print(f"   [{index}/{len(elements)}] ❌ 失败: {e}")
+
+        # 如果发生了崩溃，用隔离模式重试
+        if use_isolation:
+            print()
+            print("🔄 使用隔离模式重新截图（逐张加载，减少内存压力）...")
+            browser.close()
+
+            # 重新启动浏览器
+            if args.browser == "firefox":
+                browser = p.firefox.launch(headless=headless)
+            elif args.browser == "webkit":
+                browser = p.webkit.launch(headless=headless)
+            else:
+                browser = p.chromium.launch(headless=headless, args=chromium_args)
+
+            success_count = 0
+            total = len(elements)
+
+            for index in range(1, total + 1):
+                try:
+                    # 每张卡片用全新的页面，彻底释放内存
+                    context = browser.new_context(
+                        viewport={"width": args.width, "height": args.height}
+                    )
+                    iso_page = context.new_page()
+                    iso_page.set_default_timeout(60000)
+
+                    # 重新加载页面
+                    if target_url:
+                        iso_page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+                        try:
+                            iso_page.wait_for_load_state("networkidle", timeout=15000)
+                        except Exception:
+                            pass
+                    else:
+                        iso_page.goto(path_to_file_url(html_path), wait_until="networkidle")
+
+                    # 等待字体加载
+                    iso_page.evaluate("() => document.fonts ? document.fonts.ready : Promise.resolve()")
+                    iso_page.wait_for_timeout(500)
+
+                    # 隐藏所有其他卡片，只保留当前要截图的那张
+                    iso_page.evaluate(f"""
+                        () => {{
+                            const cards = document.querySelectorAll('{selector}');
+                            cards.forEach((card, i) => {{
+                                if (i !== {index - 1}) {{
+                                    card.style.display = 'none';
+                                }}
+                            }});
+                        }}
+                    """)
+                    iso_page.wait_for_timeout(300)
+
+                    # 获取目标元素并截图
+                    target_el = iso_page.query_selector(f"{selector}:nth-child({index})")
+                    if not target_el:
+                        # nth-child 可能不匹配，用备用方案
+                        visible_els = iso_page.query_selector_all(selector)
+                        visible_els = [el for el in visible_els if el.is_visible()]
+                        if visible_els:
+                            target_el = visible_els[0]
+
+                    if target_el:
+                        target_el.scroll_into_view_if_needed()
+                        iso_page.wait_for_timeout(300)
+                        filename = f"{args.prefix}-{index:02d}.png"
+                        out_path = out_dir / filename
+                        target_el.screenshot(path=str(out_path))
+                        print(f"   [{index}/{total}] {filename}")
+                        success_count += 1
+                    else:
+                        print(f"   [{index}/{total}] ❌ 未找到元素")
+
+                    # 关闭此页面的 context，释放内存
+                    context.close()
+
+                except Exception as e:
+                    print(f"   [{index}/{total}] ❌ 失败: {e}")
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
 
         browser.close()
 

@@ -4,39 +4,50 @@
 
 ## ✨ 特性
 
-- **自动检测选择器** - 自动识别 `.card`、`.poster-card` 等常见卡片元素
-- **自动检测 iframe** - 自动发现并处理嵌套在 iframe 中的内容
-- **自动生成输出目录** - 根据 URL 或文件名智能命名输出目录
-- **懒加载支持** - 两轮滚动策略确保动态加载的内容正确渲染
-- **精确优先** - 精确选择器优先于模糊匹配，避免误选
+- **自动检测选择器** — 自动识别 `.card`、`.poster-card` 等常见卡片元素
+- **自动检测 iframe** — 自动发现并处理嵌套在 iframe 中的内容
+- **自动生成输出目录** — 根据 URL 或文件名智能命名输出目录
+- **懒加载支持** — 两轮滚动策略确保动态加载的内容正确渲染
+- **精确优先** — 精确选择器优先于模糊匹配，避免误选
+- **崩溃自动恢复** — 遇到大页面渲染崩溃时，自动切换到隔离模式逐张截图
 
 ## 🚀 快速开始
 
 ### 安装
 
+**方式一：pip 直接安装（推荐）**
+
 ```bash
-# 克隆项目
-git clone https://github.com/yourusername/card-snapshot.git
-cd card-snapshot
+pip install git+https://github.com/violin86318/card-snapshot.git
 
-# 安装依赖
-pip install -r requirements.txt
-
-# 安装浏览器（首次运行需要）
+# 安装浏览器引擎（首次运行需要）
 python -m playwright install chromium
 ```
+
+**方式二：克隆源码安装**
+
+```bash
+git clone https://github.com/violin86318/card-snapshot.git
+cd card-snapshot
+pip install -e .
+
+# 安装浏览器引擎（首次运行需要）
+python -m playwright install chromium
+```
+
+安装后即可在终端使用 `card-snapshot` 命令。
 
 ### 使用
 
 ```bash
 # 最简单的用法 - 全自动检测
-python card_snapshot.py "https://example.com"
+card-snapshot "https://example.com"
 
 # 指定选择器
-python card_snapshot.py "https://example.com" -s ".card"
+card-snapshot "https://example.com" -s ".card"
 
 # 本地 HTML 文件
-python card_snapshot.py "page.html"
+card-snapshot "page.html"
 ```
 
 ## 📖 使用示例
@@ -45,7 +56,7 @@ python card_snapshot.py "page.html"
 
 ```bash
 # 工具会自动检测选择器和 iframe
-python card_snapshot.py "https://youmind.com/a/xxx"
+card-snapshot "https://youmind.com/a/xxx"
 
 # 输出:
 # 🎯 目标: https://youmind.com/a/xxx
@@ -61,20 +72,20 @@ python card_snapshot.py "https://youmind.com/a/xxx"
 
 ```bash
 # 列出检测到的选择器（不导出）
-python card_snapshot.py "https://example.com" --list-selectors
+card-snapshot "https://example.com" --list-selectors
 
 # 显示浏览器窗口
-python card_snapshot.py "https://example.com" --show-browser
+card-snapshot "https://example.com" --show-browser
 ```
 
 ### 自定义输出
 
 ```bash
 # 自定义输出目录
-python card_snapshot.py "https://example.com" -o "./my-cards"
+card-snapshot "https://example.com" -o "./my-cards"
 
 # 自定义文件名前缀
-python card_snapshot.py "https://example.com" --prefix "poster"
+card-snapshot "https://example.com" --prefix "poster"
 # 输出: poster-01.png, poster-02.png, ...
 ```
 
@@ -82,7 +93,7 @@ python card_snapshot.py "https://example.com" --prefix "poster"
 
 ```bash
 # 如果自动检测不准确，可以手动指定
-python card_snapshot.py "https://example.com" -f "cdn.example.com"
+card-snapshot "https://example.com" -f "cdn.example.com"
 ```
 
 ## ⚙️ 参数说明
@@ -98,6 +109,7 @@ python card_snapshot.py "https://example.com" -f "cdn.example.com"
 | `--height` | `-H` | `1200` | 浏览器视口高度 |
 | `--show-browser` | - | - | 显示浏览器窗口（调试用） |
 | `--list-selectors` | - | - | 只列出检测到的选择器 |
+| `--browser` | - | `chromium` | 浏览器引擎: chromium/firefox/webkit |
 
 ## 🔍 自动检测逻辑
 
@@ -106,13 +118,9 @@ python card_snapshot.py "https://example.com" -f "cdn.example.com"
 工具会按以下优先级检测卡片选择器：
 
 **精确选择器**（优先）：
-- `.poster-card`
-- `.card`
-- `.post-card`
-- `.article-card`
-- `.item-card`
-- `.grid-item`
-- `.slide`
+- `.page` / `.poster-card` / `.card`
+- `.post-card` / `.article-card` / `.item-card`
+- `.grid-item` / `.slide`
 
 **模糊选择器**（后备）：
 - `[class*='card']`
@@ -127,54 +135,46 @@ python card_snapshot.py "https://example.com" -f "cdn.example.com"
 - URL: `https://example.com/page/cards` → `outputs/cards-example-cards`
 - 本地文件: `my-page.html` → `outputs/cards-my-page`
 
-## 📝 实际案例
-
-### YouMind 卡片导出
-
-```bash
-python card_snapshot.py "https://youmind.com/a/fUEcFwITYVgR5q"
-# 自动检测到 iframe 和 .poster-card 选择器
-# 导出 11 张卡片到 outputs/cards-youmind-fUEcFwITYVgR5q/
-```
-
-### Lovart 卡片导出
-
-```bash
-python card_snapshot.py "https://assets-persist.lovart.ai/agent_images/xxx.html"
-# 自动检测到 .card 选择器
-# 导出 7 张卡片到 outputs/cards-assets-persist-agent_images/
-```
-
-### BibiGPT 卡片导出
-
-```bash
-python card_snapshot.py "https://bibigpt.co/share/html/xxx"
-# 自动检测到 iframe 和 .card 选择器
-# 导出 9 张卡片到 outputs/cards-bibigpt-html/
-```
-
 ## 🛠️ 故障排除
+
+### 浏览器崩溃 (Target crashed)
+
+工具内置了**自动崩溃恢复**机制：
+
+1. 首先尝试正常截图
+2. 如果检测到渲染进程崩溃，自动切换到**隔离模式**
+3. 隔离模式：为每张卡片创建独立的浏览器 context，隐藏其他卡片，逐张截图
+
+如果隔离模式仍然失败，可以尝试使用 WebKit：
+
+```bash
+python -m playwright install webkit
+card-snapshot "your-page.html" --browser webkit
+```
 
 ### 未检测到卡片元素
 
 ```bash
 # 使用 --list-selectors 查看页面中的选择器
-python card_snapshot.py "https://example.com" --list-selectors
+card-snapshot "https://example.com" --list-selectors
 
 # 然后手动指定
-python card_snapshot.py "https://example.com" -s ".your-selector"
+card-snapshot "https://example.com" -s ".your-selector"
 ```
 
 ### 内容未完全加载
 
 ```bash
 # 显示浏览器窗口检查
-python card_snapshot.py "https://example.com" --show-browser
+card-snapshot "https://example.com" --show-browser
 ```
 
-### 超时错误
+## 📋 在其他电脑安装
 
-页面加载超时默认为 60 秒。如果页面加载很慢，可能需要修改源码中的 timeout 值。
+```bash
+# 一行命令安装
+pip install git+https://github.com/violin86318/card-snapshot.git && python -m playwright install chromium
+```
 
 ## 📄 License
 

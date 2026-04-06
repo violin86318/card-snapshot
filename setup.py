@@ -6,12 +6,12 @@ with open("README.md", "r", encoding="utf-8") as f:
 setup(
     name="card-snapshot",
     version="1.0.0",
-    author="Your Name",
-    author_email="your.email@example.com",
+    author="violin86318",
+    author_email="pommotion.com@gmail.com",
     description="智能从网页中导出卡片元素为 PNG 图片",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/card-snapshot",
+    url="https://github.com/violin86318/card-snapshot",
     py_modules=["card_snapshot"],
     classifiers=[
         "Development Status :: 4 - Beta",

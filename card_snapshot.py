@@ -469,10 +469,13 @@ def main() -> None:
                             try:
                                 with open(html_path, 'r', encoding='utf-8') as f:
                                     content = f.read()
-                                # 彻底移除导致崩溃的 SVG 噪点层
+                                
+                                # 终极杀手锏：无脑替换所有的 feTurbulence 为 g（静默失效）
+                                # 这比任何正则都可靠，能跨越 base64、内联 CSS、以及深层嵌套
+                                content = content.replace("feTurbulence", "g")
+                                
+                                # 移除残余的专门滤镜外壳
                                 content = re.sub(r'<svg[^>]*class="[^"]*noise-filter[^"]*"[^>]*>.*?</svg>', '', content, flags=re.DOTALL)
-                                # 暴力删除所有的 base64 SVG 背景（由于 base64 很长且可能导致解析崩溃，直接清空）
-                                content = re.sub(r'data:image/svg\+xml[^"\'\)\s]*feTurbulence[^"\'\)\s]*', '', content)
                                 
                                 # 将专属 CSS 注入到 head 头部
                                 content = content.replace('</head>', f'<style>{CARD_ISOLATION_CSS}</style></head>')
@@ -489,8 +492,8 @@ def main() -> None:
                                 try:
                                     response = route.fetch()
                                     body = response.text()
+                                    body = body.replace("feTurbulence", "g")
                                     body = re.sub(r'<svg[^>]*class="[^"]*noise-filter[^"]*"[^>]*>.*?</svg>', '', body, flags=re.DOTALL)
-                                    body = re.sub(r'data:image/svg\+xml[^"\'\)\s]*feTurbulence[^"\'\)\s]*', '', body)
                                     body = body.replace('</head>', f'<style>{CARD_ISOLATION_CSS}</style></head>')
                                     route.fulfill(response=response, body=body)
                                 except Exception:

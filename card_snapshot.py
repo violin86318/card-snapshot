@@ -444,6 +444,26 @@ def main() -> None:
 
                         temp_html_path = None
                         
+                        # 动态生成每个卡片的专属 CSS：只显示当前卡片，隐藏其他所有卡片
+                        CARD_ISOLATION_CSS = f"""
+                            /* 隐藏所有卡片 */
+                            {selector} {{ display: none !important; }}
+                            /* 只显示当前目标的卡片 */
+                            {selector}:nth-child({index}) {{ display: flex !important; display: block !important; }}
+                            /* 抹除所有可能导致崩溃的伪元素背景和滤镜 */
+                            *, *::after, *::before {{
+                                filter: none !important;
+                                backdrop-filter: none !important;
+                            }}
+                            .card::after, .card::before, body::before, body::after {{
+                                background-image: none !important;
+                            }}
+                            svg filter, svg feTurbulence, svg feColorMatrix {{
+                                display: none !important;
+                            }}
+                            .noise-filter {{ display: none !important; }}
+                        """
+                        
                         # 针对本地文件提前预处理 HTML，避免渲染引擎在加载时即崩溃
                         if not target_url:
                             try:
@@ -451,9 +471,13 @@ def main() -> None:
                                     content = f.read()
                                 # 彻底移除导致崩溃的 SVG 噪点层
                                 content = re.sub(r'<svg[^>]*class="[^"]*noise-filter[^"]*"[^>]*>.*?</svg>', '', content, flags=re.DOTALL)
-                                content = content.replace('</head>', f'<style>{STRIP_HEAVY_CSS}</style></head>')
+                                # 暴力删除所有的 base64 SVG 背景（由于 base64 很长且可能导致解析崩溃，直接清空）
+                                content = re.sub(r'data:image/svg\+xml[^"\'\)\s]*feTurbulence[^"\'\)\s]*', '', content)
                                 
-                                fd, temp_html_path = tempfile.mkstemp(suffix=".html", dir=html_path.parent)
+                                # 将专属 CSS 注入到 head 头部
+                                content = content.replace('</head>', f'<style>{CARD_ISOLATION_CSS}</style></head>')
+                                
+                                fd, temp_html_path = tempfile.mkstemp(suffix=f"_iso_card_{index}.html", dir=html_path.parent)
                                 with os.fdopen(fd, 'w', encoding='utf-8') as f:
                                     f.write(content)
                             except Exception as e:
@@ -466,7 +490,8 @@ def main() -> None:
                                     response = route.fetch()
                                     body = response.text()
                                     body = re.sub(r'<svg[^>]*class="[^"]*noise-filter[^"]*"[^>]*>.*?</svg>', '', body, flags=re.DOTALL)
-                                    body = body.replace('</head>', f'<style>{STRIP_HEAVY_CSS}</style></head>')
+                                    body = re.sub(r'data:image/svg\+xml[^"\'\)\s]*feTurbulence[^"\'\)\s]*', '', body)
+                                    body = body.replace('</head>', f'<style>{CARD_ISOLATION_CSS}</style></head>')
                                     route.fulfill(response=response, body=body)
                                 except Exception:
                                     route.continue_()
@@ -491,29 +516,10 @@ def main() -> None:
                         iso_page.evaluate("() => document.fonts ? document.fonts.ready : Promise.resolve()")
                         iso_page.wait_for_timeout(500)
 
-                        # 隐藏所有其他卡片
-                        iso_page.evaluate(f"""
-                            () => {{
-                                // 隐藏其他卡片
-                                const cards = document.querySelectorAll('{selector}');
-                                cards.forEach((card, i) => {{
-                                    if (i !== {index - 1}) {{
-                                        card.style.display = 'none';
-                                    }}
-                                }});
-                                // 二次确保注入样式
-                                const style = document.createElement('style');
-                                style.textContent = `{STRIP_HEAVY_CSS}`;
-                                document.head.appendChild(style);
-                                // 移除残余 SVG
-                                document.querySelectorAll('svg.noise-filter, svg filter').forEach(el => el.remove());
-                            }}
-                        """)
-                        iso_page.wait_for_timeout(300)
-
                         # 获取目标元素并截图
                         target_el = iso_page.query_selector(f"{selector}:nth-child({index})")
                         if not target_el:
+                            # 由于我们用了 !important 隐藏其他，只需要找可见的
                             visible_els = iso_page.query_selector_all(selector)
                             visible_els = [el for el in visible_els if el.is_visible()]
                             if visible_els:

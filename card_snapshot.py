@@ -16,8 +16,12 @@ Card Snapshot - 智能从网页中导出卡片元素为 PNG 图片
 """
 
 import argparse
+import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -83,7 +87,9 @@ def generate_output_dir(target: str) -> str:
     name = re.sub(r"[^\w\-]", "-", name)
     name = re.sub(r"-+", "-", name).strip("-")
 
-    return f"./outputs/cards-{name}"
+    # 默认输出到用户指定的工作流归档文件夹
+    base_dir = "/Users/wanglingwei/Library/Mobile Documents/com~apple~CloudDocs/~Vibe-Coding/card-snapshot"
+    return f"{base_dir}/outputs/cards-{name}"
 
 
 def detect_selectors(target_ctx, page) -> list:
@@ -151,6 +157,71 @@ def detect_iframe(page) -> tuple:
             pass
 
     return None, None
+
+
+def retry_failed_with_webkit(
+    target: str,
+    selector: str,
+    out_dir: Path,
+    failed_indices: list[int],
+    args,
+    frame_hint: str | None = None,
+) -> tuple[int, list[int]]:
+    """用 webkit 重跑到临时目录，再只拷回失败项。"""
+    if not failed_indices:
+        return 0, []
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="card-snapshot-webkit-"))
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        target,
+        "-s",
+        selector,
+        "-o",
+        str(temp_dir),
+        "-w",
+        str(args.width),
+        "-H",
+        str(args.height),
+        "--prefix",
+        args.prefix,
+        "--browser",
+        "webkit",
+    ]
+
+    if frame_hint:
+        cmd.extend(["-f", frame_hint])
+    if args.show_browser:
+        cmd.append("--show-browser")
+
+    print()
+    print("🔄 使用 webkit 补拍失败卡片（导出到临时目录后合并回结果）...")
+
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        print("   ❌ webkit 补拍失败")
+        return 0, failed_indices
+
+    recovered = 0
+    still_failed = []
+    for index in failed_indices:
+        filename = f"{args.prefix}-{index:02d}.png"
+        src = temp_dir / filename
+        dst = out_dir / filename
+        if src.exists():
+            shutil.copy2(src, dst)
+            recovered += 1
+            print(f"   ✅ 已补回: {filename}")
+        else:
+            still_failed.append(index)
+
+    if still_failed:
+        print(f"   ⚠️  webkit 仍未补回: {still_failed}")
+    else:
+        print("   ✅ webkit 已补回全部失败卡片")
+
+    return recovered, still_failed
 
 
 def main() -> None:
